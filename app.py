@@ -19,8 +19,8 @@ app.secret_key = os.environ.get("SECRET_KEY", "ambla-trekking-secret-2026")
 # CHANGE THESE ADMIN DETAILS
 # =========================================================
 
-ADMIN_EMAIL = "bhattsmit51@gmail.com"
-ADMIN_PASSWORD = "CHANGE_THIS_PASSWORD"
+ADMIN_EMAIL = "bhattsmit451@gmail.com"
+ADMIN_PASSWORD = "sm229210"
 
 # =========================================================
 
