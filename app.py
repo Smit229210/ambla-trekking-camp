@@ -1,4 +1,8 @@
-from flask import Flask, request, redirect, url_for, session, send_file, render_template_string
+from flask import (
+    Flask, request, redirect, url_for, session,
+    send_file, render_template_string, send_from_directory
+)
+from werkzeug.utils import secure_filename
 import sqlite3
 import io
 import os
@@ -13,18 +17,35 @@ from reportlab.platypus import (
 )
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "ambla-trekking-secret-2026")
+app.secret_key = os.environ.get(
+    "SECRET_KEY",
+    "change-this-secret-key"
+)
 
 # =========================================================
-# CHANGE THESE ADMIN DETAILS
+# ADMIN DETAILS
 # =========================================================
 
 ADMIN_EMAIL = "bhattsmit451@gmail.com"
-ADMIN_PASSWORD = "sm229210"
+ADMIN_PASSWORD = "iyf.bpti"
 
 # =========================================================
 
 DB = "trekking.db"
+
+UPLOAD_FOLDER = "uploads"
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+def allowed_file(filename):
+    return (
+        "." in filename and
+        filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+    )
 
 
 def db():
@@ -33,7 +54,23 @@ def db():
     return con
 
 
+def add_column_if_missing(con, table, column, definition):
+    columns = [
+        row["name"]
+        for row in con.execute(
+            f"PRAGMA table_info({table})"
+        ).fetchall()
+    ]
+
+    if column not in columns:
+        con.execute(
+            f"ALTER TABLE {table} "
+            f"ADD COLUMN {column} {definition}"
+        )
+
+
 def init_db():
+
     con = db()
 
     con.execute("""
@@ -52,6 +89,21 @@ def init_db():
     )
     """)
 
+    # Add new columns to your existing database
+    add_column_if_missing(
+        con,
+        "registrations",
+        "payment_screenshot",
+        "TEXT"
+    )
+
+    add_column_if_missing(
+        con,
+        "registrations",
+        "payment_note",
+        "TEXT"
+    )
+
     con.execute("""
     CREATE TABLE IF NOT EXISTS admins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +114,6 @@ def init_db():
     )
     """)
 
-    # Add superior admin if not already present
     existing = con.execute(
         "SELECT * FROM admins WHERE email=?",
         (ADMIN_EMAIL,)
@@ -70,8 +121,17 @@ def init_db():
 
     if not existing:
         con.execute(
-            "INSERT INTO admins (name,email,password,role) VALUES (?,?,?,?)",
-            ("Superior Admin", ADMIN_EMAIL, ADMIN_PASSWORD, "superior")
+            """
+            INSERT INTO admins
+            (name, email, password, role)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "Superior Admin",
+                ADMIN_EMAIL,
+                ADMIN_PASSWORD,
+                "superior"
+            )
         )
 
     con.commit()
@@ -128,7 +188,7 @@ nav a{
 }
 
 .container{
-    max-width:950px;
+    max-width:1000px;
     margin:auto;
     padding:30px 20px;
 }
@@ -158,12 +218,13 @@ button,.btn{
     display:inline-block;
     background:#245a3d;
     color:white;
-    padding:13px 22px;
+    padding:12px 18px;
     border:none;
     border-radius:8px;
     cursor:pointer;
     text-decoration:none;
-    font-size:16px;
+    font-size:15px;
+    margin:3px;
 }
 
 .btn:hover,button:hover{
@@ -180,6 +241,24 @@ button,.btn{
 .success{
     background:#d8f3dc;
     padding:15px;
+    border-radius:8px;
+}
+
+.pending{
+    background:#fff3cd;
+    padding:10px;
+    border-radius:8px;
+}
+
+.paid{
+    background:#d8f3dc;
+    padding:10px;
+    border-radius:8px;
+}
+
+.rejected{
+    background:#f8d7da;
+    padding:10px;
     border-radius:8px;
 }
 
@@ -218,6 +297,15 @@ th{
     color:#b03a2e;
 }
 
+.payment-qr{
+    max-width:280px;
+    width:100%;
+    display:block;
+    margin:15px auto;
+    border:1px solid #ddd;
+    border-radius:10px;
+}
+
 </style>
 """
 
@@ -229,21 +317,29 @@ th{
 HOME = """
 <!DOCTYPE html>
 <html>
+
 <head>
+
 <title>Ambla One Day Trekking Camp</title>
+
 """ + CSS + """
+
 </head>
 
 <body>
 
 <nav>
-<div><b>🌿 Ambla Trekking Camp</b></div>
+
+<div>
+<b>🌿 Ambla Trekking Camp</b>
+</div>
 
 <div>
 <a href="/">Home</a>
 <a href="#register">Registration</a>
 <a href="/login">Admin</a>
 </div>
+
 </nav>
 
 
@@ -262,6 +358,7 @@ HOME = """
 
 <div class="container">
 
+
 <div class="card">
 
 <h2>💰 Trekking Camp Fee</h2>
@@ -269,9 +366,24 @@ HOME = """
 <p class="fee">₹300 per student</p>
 
 <p>
-Payment can be selected as <b>Online Payment</b> or <b>Cash Payment</b>.
-Registration remains pending until payment is confirmed by the organizers.
+Pay the fee using the QR code below.
+After payment, uploading a payment screenshot is compulsory.
 </p>
+
+<img
+class="payment-qr"
+src="/payment-qr"
+alt="Payment QR Code"
+>
+
+<div class="warning">
+
+<b>⚠️ Important:</b><br>
+
+After paying ₹300, take a screenshot of the successful
+payment and upload it during registration.
+
+</div>
 
 </div>
 
@@ -284,13 +396,13 @@ Registration remains pending until payment is confirmed by the organizers.
 
 <li>કૃપા કરીને તમામ વિગતો સાચી રીતે ભરો.</li>
 
-<li>રજીસ્ટ્રેશન પૂર્ણ થયા પછી તમારું Registration Details PDF ડાઉનલોડ કરો.</li>
+<li>Payment કર્યા પછી payment screenshot upload કરવો ફરજિયાત છે.</li>
+
+<li>રજીસ્ટ્રેશન submit થયા પછી તમારું Registration PDF download કરી શકશો.</li>
 
 <li>PDF માં તમારો વ્યક્તિગત QR Code આપવામાં આવશે.</li>
 
-<li>ટ્રેકિંગ દરમિયાન QR Code attendance માટે ઉપયોગી રહેશે.</li>
-
-<li>કોઈપણ સમસ્યા હોય તો આયોજકોનો સંપર્ક કરો.</li>
+<li>Payment verification આયોજકો દ્વારા કરવામાં આવશે.</li>
 
 </ul>
 
@@ -339,7 +451,11 @@ Wear green, brown and nature camouflage colors.
 
 <p class="fee">Fees: ₹300</p>
 
-<form method="POST" action="/register">
+<form
+method="POST"
+action="/register"
+enctype="multipart/form-data"
+>
 
 <label>વિદ્યાર્થીનું સંપૂર્ણ નામ / Full Name</label>
 <input name="full_name" required>
@@ -362,20 +478,48 @@ Wear green, brown and nature camouflage colors.
 <label>Emergency Mobile Number</label>
 <input name="emergency_mobile" required>
 
+
+<h3>💳 Payment</h3>
+
+<p>
+Scan the QR code above and pay <b>₹300</b>.
+</p>
+
 <label>Payment Method</label>
 
 <select name="payment_method" required>
-<option value="">Select Payment Method</option>
+
 <option value="Online">Online Payment</option>
+
 <option value="Cash">Cash Payment</option>
+
 </select>
 
+
+<label>
+📸 Upload Payment Screenshot
+</label>
+
+<input
+type="file"
+name="payment_screenshot"
+accept=".png,.jpg,.jpeg,.webp"
+required
+>
+
 <p class="small">
-Online payment QR code can be added later. Cash payments must be confirmed by an organizer.
+
+Payment screenshot upload is compulsory for registration.
+For cash payment, upload any proof/instruction image if required,
+or contact the organizer for verification.
+
 </p>
 
+
 <button type="submit">
-Register & Generate PDF
+
+Submit Registration & Get PDF
+
 </button>
 
 </form>
@@ -404,14 +548,13 @@ Register & Generate PDF
 
 </div>
 
+
 </div>
 
 
 <div class="footer">
 
 <p>Ambla One Day Trekking Camp</p>
-
-<p>Credit: ChatGPT</p>
 
 </div>
 
@@ -426,9 +569,23 @@ Register & Generate PDF
 
 @app.route("/")
 def home():
+
     return render_template_string(
         HOME,
         message=request.args.get("message", "")
+    )
+
+
+# =========================================================
+# PAYMENT QR CODE
+# =========================================================
+
+@app.route("/payment-qr")
+def payment_qr():
+
+    return send_from_directory(
+        ".",
+        "unnamed.png"
     )
 
 
@@ -451,13 +608,55 @@ def register():
     ]
 
     for field in fields:
+
         if not request.form.get(field, "").strip():
+
             return redirect(
                 url_for(
                     "home",
                     message="Please fill all required details."
                 )
             )
+
+
+    screenshot = request.files.get("payment_screenshot")
+
+
+    if not screenshot or screenshot.filename == "":
+
+        return redirect(
+            url_for(
+                "home",
+                message="Payment screenshot is compulsory."
+            )
+        )
+
+
+    if not allowed_file(screenshot.filename):
+
+        return redirect(
+            url_for(
+                "home",
+                message="Please upload PNG, JPG, JPEG or WEBP image only."
+            )
+        )
+
+
+    filename = secure_filename(screenshot.filename)
+
+    unique_filename = (
+        str(int(__import__("time").time()))
+        + "_"
+        + filename
+    )
+
+    screenshot.save(
+        os.path.join(
+            app.config["UPLOAD_FOLDER"],
+            unique_filename
+        )
+    )
+
 
     con = db()
 
@@ -473,10 +672,12 @@ def register():
             emergency_mobile,
             payment_method,
             payment_status,
-            attendance
+            attendance,
+            payment_screenshot,
+            payment_note
         )
 
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
 
         request.form["full_name"].strip(),
@@ -487,17 +688,31 @@ def register():
         request.form["emergency_name"].strip(),
         request.form["emergency_mobile"].strip(),
         request.form["payment_method"],
+
+        "Pending Verification",
+
         "Pending",
-        "Pending"
+
+        unique_filename,
+
+        "Waiting for admin verification"
 
     ))
+
 
     student_id = cur.lastrowid
 
     con.commit()
+
     con.close()
 
-    return redirect(url_for("registration_success", student_id=student_id))
+
+    return redirect(
+        url_for(
+            "registration_success",
+            student_id=student_id
+        )
+    )
 
 
 # =========================================================
@@ -516,8 +731,10 @@ def registration_success(student_id):
 
     con.close()
 
+
     if not student:
         return "Student not found", 404
+
 
     page = """
     <!DOCTYPE html>
@@ -525,7 +742,7 @@ def registration_success(student_id):
 
     <head>
 
-    <title>Registration Successful</title>
+    <title>Registration Submitted</title>
 
     """ + CSS + """
 
@@ -544,42 +761,75 @@ def registration_success(student_id):
     </p>
 
     <p>
-    <b>Student:</b> {{student["full_name"]}}
+
+    <b>Student:</b>
+    {{student["full_name"]}}
+
     </p>
 
     <p>
-    <b>Enrollment:</b> {{student["enrollment"]}}
+
+    <b>Enrollment:</b>
+    {{student["enrollment"]}}
+
+    </p>
+
+    <div class="pending">
+
+    <b>Payment Status:</b>
+
+    {{student["payment_status"]}}
+
+    </div>
+
+    <br>
+
+    <p>
+
+    Your payment screenshot has been submitted.
+    The organizer will verify the payment.
+
     </p>
 
     <p>
-    <b>Payment Status:</b> {{student["payment_status"]}}
+
+    You can now download your individual
+    registration PDF with your personal QR code.
+
     </p>
 
-    <p>
-    Download your registration details PDF and keep it safely.
-    </p>
+    <a
+    class="btn"
+    href="/registration-pdf/{{student["id"]}}"
+    >
 
-    <a class="btn" href="/registration-pdf/{{student["id"]}}">
     📄 Download Registration PDF
+
     </a>
 
     <br><br>
 
-    <a href="/">← Back to Home</a>
+    <a href="/">
+    ← Back to Home
+    </a>
 
     </div>
 
     </div>
 
     </body>
+
     </html>
     """
 
-    return render_template_string(page, student=student)
+    return render_template_string(
+        page,
+        student=student
+    )
 
 
 # =========================================================
-# PDF GENERATION
+# REGISTRATION PDF
 # =========================================================
 
 @app.route("/registration-pdf/<int:student_id>")
@@ -594,10 +844,13 @@ def registration_pdf(student_id):
 
     con.close()
 
+
     if not student:
         return "Student not found", 404
 
+
     buffer = io.BytesIO()
+
 
     doc = SimpleDocTemplate(
         buffer,
@@ -608,9 +861,11 @@ def registration_pdf(student_id):
         bottomMargin=40
     )
 
+
     styles = getSampleStyleSheet()
 
     story = []
+
 
     story.append(
         Paragraph(
@@ -619,12 +874,14 @@ def registration_pdf(student_id):
         )
     )
 
+
     story.append(
         Paragraph(
             "Date: 23/08/2026 | Time: 6:00 AM to 6:00 PM",
             styles["Normal"]
         )
     )
+
 
     story.append(
         Paragraph(
@@ -633,60 +890,121 @@ def registration_pdf(student_id):
         )
     )
 
-    story.append(Spacer(1, 20))
+
+    story.append(
+        Spacer(1, 20)
+    )
+
 
     data = [
 
         ["Student ID", str(student["id"])],
+
         ["Full Name", student["full_name"]],
+
         ["Enrollment Number", student["enrollment"]],
+
         ["Mobile", student["mobile"]],
+
         ["Email", student["email"]],
+
         ["College / Class", student["college_class"]],
+
         ["Emergency Contact", student["emergency_name"]],
+
         ["Emergency Mobile", student["emergency_mobile"]],
+
         ["Fee", "₹300"],
+
         ["Payment Method", student["payment_method"]],
+
         ["Payment Status", student["payment_status"]],
+
         ["Attendance", student["attendance"]]
 
     ]
+
 
     table = Table(
         data,
         colWidths=[170, 330]
     )
 
+
     table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#214d35")),
-            ("TEXTCOLOR", (0, 0), (0, -1), colors.white),
-            ("GRID", (0, 0), (-1, -1), 1, colors.grey),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("PADDING", (0, 0), (-1, -1), 8)
+
+            (
+                "BACKGROUND",
+                (0, 0),
+                (0, -1),
+                colors.HexColor("#214d35")
+            ),
+
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (0, -1),
+                colors.white
+            ),
+
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                1,
+                colors.grey
+            ),
+
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE"
+            ),
+
+            (
+                "PADDING",
+                (0, 0),
+                (-1, -1),
+                8
+            )
+
         ])
     )
 
+
     story.append(table)
 
-    story.append(Spacer(1, 25))
+    story.append(
+        Spacer(1, 25)
+    )
 
-    # QR code contains student ID
-    qr_data = "AMBLA-TREK-2026-STUDENT-" + str(student["id"])
+
+    qr_data = (
+        "AMBLA-TREK-2026-STUDENT-"
+        + str(student["id"])
+    )
+
 
     qr = qrcode.make(qr_data)
 
     qr_buffer = io.BytesIO()
 
-    qr.save(qr_buffer, format="PNG")
+    qr.save(
+        qr_buffer,
+        format="PNG"
+    )
 
     qr_buffer.seek(0)
+
 
     qr_image = Image(
         qr_buffer,
         width=140,
         height=140
     )
+
 
     story.append(
         Paragraph(
@@ -695,19 +1013,28 @@ def registration_pdf(student_id):
         )
     )
 
+
     story.append(qr_image)
 
-    story.append(Spacer(1, 15))
+
+    story.append(
+        Spacer(1, 15)
+    )
+
 
     story.append(
         Paragraph(
-            "Important: Keep this PDF safely. "
+            "Keep this PDF safely. "
             "The QR code may be used for attendance verification.",
             styles["Normal"]
         )
     )
 
-    story.append(Spacer(1, 25))
+
+    story.append(
+        Spacer(1, 25)
+    )
+
 
     story.append(
         Paragraph(
@@ -717,6 +1044,7 @@ def registration_pdf(student_id):
         )
     )
 
+
     story.append(
         Paragraph(
             "Important Note: Wear green, brown and nature camouflage colors.",
@@ -724,29 +1052,20 @@ def registration_pdf(student_id):
         )
     )
 
-    story.append(Spacer(1, 25))
-
-    story.append(
-        Paragraph(
-            "Credit: ChatGPT",
-            styles["Normal"]
-        )
-    )
 
     doc.build(story)
 
     buffer.seek(0)
 
-    filename = (
-        "Ambla_Trekking_Registration_"
-        + str(student["id"])
-        + ".pdf"
-    )
 
     return send_file(
         buffer,
         as_attachment=True,
-        download_name=filename,
+        download_name=(
+            "Ambla_Trekking_Registration_"
+            + str(student["id"])
+            + ".pdf"
+        ),
         mimetype="application/pdf"
     )
 
@@ -760,29 +1079,52 @@ def login():
 
     error = ""
 
+
     if request.method == "POST":
 
-        email = request.form.get("email", "").lower().strip()
-        password = request.form.get("password", "")
+        email = request.form.get(
+            "email",
+            ""
+        ).lower().strip()
+
+
+        password = request.form.get(
+            "password",
+            ""
+        )
+
 
         con = db()
 
+
         admin = con.execute(
-            "SELECT * FROM admins WHERE email=? AND password=?",
-            (email, password)
+            """
+            SELECT * FROM admins
+            WHERE email=? AND password=?
+            """,
+            (
+                email,
+                password
+            )
         ).fetchone()
 
+
         con.close()
+
 
         if admin:
 
             session["admin"] = True
+
             session["admin_email"] = admin["email"]
+
             session["admin_role"] = admin["role"]
 
             return redirect("/admin")
 
+
         error = "Invalid email or password."
+
 
     page = """
     <!DOCTYPE html>
@@ -805,7 +1147,11 @@ def login():
     <h1>🔐 Admin Login</h1>
 
     {% if error %}
-    <p style="color:red;"><b>{{error}}</b></p>
+
+    <p style="color:red;">
+    <b>{{error}}</b>
+    </p>
+
     {% endif %}
 
     <form method="POST">
@@ -813,21 +1159,23 @@ def login():
     <label>Email</label>
 
     <input
-        type="email"
-        name="email"
-        required
+    type="email"
+    name="email"
+    required
     >
 
     <label>Password</label>
 
     <input
-        type="password"
-        name="password"
-        required
+    type="password"
+    name="password"
+    required
     >
 
     <button type="submit">
+
     Login
+
     </button>
 
     </form>
@@ -844,7 +1192,11 @@ def login():
     </html>
     """
 
-    return render_template_string(page, error=error)
+
+    return render_template_string(
+        page,
+        error=error
+    )
 
 
 # =========================================================
@@ -853,10 +1205,26 @@ def login():
 
 def login_required():
 
-    if not session.get("admin"):
-        return False
+    return bool(
+        session.get("admin")
+    )
 
-    return True
+
+# =========================================================
+# VIEW PAYMENT SCREENSHOT
+# =========================================================
+
+@app.route("/payment-proof/<filename>")
+def payment_proof(filename):
+
+    if not login_required():
+        return redirect("/login")
+
+
+    return send_from_directory(
+        app.config["UPLOAD_FOLDER"],
+        filename
+    )
 
 
 # =========================================================
@@ -869,13 +1237,21 @@ def admin():
     if not login_required():
         return redirect("/login")
 
+
     con = db()
 
+
     students = con.execute(
-        "SELECT * FROM registrations ORDER BY id DESC"
+        """
+        SELECT *
+        FROM registrations
+        ORDER BY id DESC
+        """
     ).fetchall()
 
+
     con.close()
+
 
     page = """
     <!DOCTYPE html>
@@ -904,7 +1280,9 @@ def admin():
     <a href="/attendance">Attendance</a>
 
     {% if session.get("admin_role") == "superior" %}
+
     <a href="/admins">Admins</a>
+
     {% endif %}
 
     <a href="/logout">Logout</a>
@@ -913,6 +1291,7 @@ def admin():
 
     </nav>
 
+
     <div class="container">
 
     <div class="card">
@@ -920,8 +1299,12 @@ def admin():
     <h1>Registered Students</h1>
 
     <p>
-    Total Registrations: <b>{{students|length}}</b>
+
+    Total Registrations:
+    <b>{{students|length}}</b>
+
     </p>
+
 
     <div style="overflow-x:auto;">
 
@@ -930,14 +1313,21 @@ def admin():
     <tr>
 
     <th>ID</th>
+
     <th>Name</th>
+
     <th>Enrollment</th>
-    <th>Mobile</th>
-    <th>Payment</th>
-    <th>Attendance</th>
+
+    <th>Payment Proof</th>
+
+    <th>Payment Status</th>
+
+    <th>Change Status</th>
+
     <th>PDF</th>
 
     </tr>
+
 
     {% for s in students %}
 
@@ -945,26 +1335,115 @@ def admin():
 
     <td>{{s["id"]}}</td>
 
-    <td>{{s["full_name"]}}</td>
-
-    <td>{{s["enrollment"]}}</td>
-
-    <td>{{s["mobile"]}}</td>
-
     <td>
 
-    {{s["payment_method"]}}<br>
+    <b>{{s["full_name"]}}</b>
 
-    <b>{{s["payment_status"]}}</b>
+    <br>
+
+    {{s["mobile"]}}
 
     </td>
 
-    <td>{{s["attendance"]}}</td>
+    <td>
+
+    {{s["enrollment"]}}
+
+    </td>
+
 
     <td>
 
-    <a href="/registration-pdf/{{s["id"]}}">
+    {% if s["payment_screenshot"] %}
+
+    <a
+    class="btn"
+    target="_blank"
+    href="/payment-proof/{{s["payment_screenshot"]}}"
+    >
+
+    View Screenshot
+
+    </a>
+
+    {% else %}
+
+    No Screenshot
+
+    {% endif %}
+
+    </td>
+
+
+    <td>
+
+    <b>
+
+    {{s["payment_status"]}}
+
+    </b>
+
+    <br>
+
+    <small>
+
+    {{s["payment_method"]}}
+
+    </small>
+
+    </td>
+
+
+    <td>
+
+    <a
+    class="btn"
+    href="/payment-status/{{s["id"]}}/Successful"
+    >
+
+    ✓ Successful
+
+    </a>
+
+    <a
+    class="btn"
+    href="/payment-status/{{s["id"]}}/Cash Paid"
+    >
+
+    💵 Cash Paid
+
+    </a>
+
+    <a
+    class="btn"
+    href="/payment-status/{{s["id"]}}/Pending Verification"
+    >
+
+    Pending
+
+    </a>
+
+    <a
+    class="btn"
+    href="/payment-status/{{s["id"]}}/Rejected"
+    >
+
+    Reject
+
+    </a>
+
+    </td>
+
+
+    <td>
+
+    <a
+    class="btn"
+    href="/registration-pdf/{{s["id"]}}"
+    >
+
     PDF
+
     </a>
 
     </td>
@@ -985,7 +1464,66 @@ def admin():
     </html>
     """
 
-    return render_template_string(page, students=students)
+
+    return render_template_string(
+        page,
+        students=students
+    )
+
+
+# =========================================================
+# CHANGE PAYMENT STATUS
+# =========================================================
+
+@app.route(
+    "/payment-status/<int:student_id>/<status>"
+)
+def payment_status(student_id, status):
+
+    if not login_required():
+        return redirect("/login")
+
+
+    allowed_statuses = [
+
+        "Pending Verification",
+
+        "Successful",
+
+        "Cash Paid",
+
+        "Rejected"
+
+    ]
+
+
+    if status not in allowed_statuses:
+
+        return "Invalid payment status", 400
+
+
+    con = db()
+
+
+    con.execute(
+        """
+        UPDATE registrations
+        SET payment_status=?
+        WHERE id=?
+        """,
+        (
+            status,
+            student_id
+        )
+    )
+
+
+    con.commit()
+
+    con.close()
+
+
+    return redirect("/admin")
 
 
 # =========================================================
@@ -998,13 +1536,21 @@ def attendance():
     if not login_required():
         return redirect("/login")
 
+
     con = db()
 
+
     students = con.execute(
-        "SELECT * FROM registrations ORDER BY full_name"
+        """
+        SELECT *
+        FROM registrations
+        ORDER BY full_name
+        """
     ).fetchall()
 
+
     con.close()
+
 
     page = """
     <!DOCTYPE html>
@@ -1028,23 +1574,24 @@ def attendance():
 
     <div>
 
-    <a href="/admin">Admin Dashboard</a>
+    <a href="/admin">
+    Admin Dashboard
+    </a>
 
-    <a href="/logout">Logout</a>
+    <a href="/logout">
+    Logout
+    </a>
 
     </div>
 
     </nav>
+
 
     <div class="container">
 
     <div class="card">
 
     <h1>Student Attendance</h1>
-
-    <p>
-    You can mark students as Present or Absent.
-    </p>
 
     <table>
 
@@ -1056,11 +1603,14 @@ def attendance():
 
     <th>Enrollment</th>
 
-    <th>Current Status</th>
+    <th>Payment</th>
+
+    <th>Attendance</th>
 
     <th>Action</th>
 
     </tr>
+
 
     {% for s in students %}
 
@@ -1072,7 +1622,15 @@ def attendance():
 
     <td>{{s["enrollment"]}}</td>
 
-    <td><b>{{s["attendance"]}}</b></td>
+    <td>{{s["payment_status"]}}</td>
+
+    <td>
+
+    <b>
+    {{s["attendance"]}}
+    </b>
+
+    </td>
 
     <td>
 
@@ -1080,14 +1638,19 @@ def attendance():
     class="btn"
     href="/attendance/{{s["id"]}}/Present"
     >
+
     Present
+
     </a>
+
 
     <a
     class="btn"
     href="/attendance/{{s["id"]}}/Absent"
     >
+
     Absent
+
     </a>
 
     </td>
@@ -1106,28 +1669,51 @@ def attendance():
     </html>
     """
 
-    return render_template_string(page, students=students)
+
+    return render_template_string(
+        page,
+        students=students
+    )
 
 
-@app.route("/attendance/<int:student_id>/<status>")
+@app.route(
+    "/attendance/<int:student_id>/<status>"
+)
 def update_attendance(student_id, status):
 
     if not login_required():
         return redirect("/login")
 
-    if status not in ["Present", "Absent", "Pending"]:
+
+    if status not in [
+        "Present",
+        "Absent",
+        "Pending"
+    ]:
+
         return "Invalid attendance status"
+
 
     con = db()
 
+
     con.execute(
-        "UPDATE registrations SET attendance=? WHERE id=?",
-        (status, student_id)
+        """
+        UPDATE registrations
+        SET attendance=?
+        WHERE id=?
+        """,
+        (
+            status,
+            student_id
+        )
     )
+
 
     con.commit()
 
     con.close()
+
 
     return redirect("/attendance")
 
@@ -1142,16 +1728,25 @@ def admins():
     if not login_required():
         return redirect("/login")
 
+
     if session.get("admin_role") != "superior":
         return "Access denied", 403
 
+
     con = db()
 
+
     admin_list = con.execute(
-        "SELECT id,name,email,role FROM admins ORDER BY id"
+        """
+        SELECT id,name,email,role
+        FROM admins
+        ORDER BY id
+        """
     ).fetchall()
 
+
     con.close()
+
 
     page = """
     <!DOCTYPE html>
@@ -1169,17 +1764,24 @@ def admins():
 
     <nav>
 
-    <div><b>👥 Admin Management</b></div>
+    <div>
+    <b>👥 Admin Management</b>
+    </div>
 
     <div>
 
-    <a href="/admin">Dashboard</a>
+    <a href="/admin">
+    Dashboard
+    </a>
 
-    <a href="/logout">Logout</a>
+    <a href="/logout">
+    Logout
+    </a>
 
     </div>
 
     </nav>
+
 
     <div class="container">
 
@@ -1187,22 +1789,38 @@ def admins():
 
     <h2>Add New Admin</h2>
 
-    <form method="POST" action="/admins/add">
+    <form
+    method="POST"
+    action="/admins/add"
+    >
 
     <label>Name</label>
 
-    <input name="name" required>
+    <input
+    name="name"
+    required
+    >
 
     <label>Email</label>
 
-    <input type="email" name="email" required>
+    <input
+    type="email"
+    name="email"
+    required
+    >
 
     <label>Password</label>
 
-    <input type="password" name="password" required>
+    <input
+    type="password"
+    name="password"
+    required
+    >
 
     <button type="submit">
+
     Add Admin
+
     </button>
 
     </form>
@@ -1228,6 +1846,7 @@ def admins():
 
     </tr>
 
+
     {% for a in admins %}
 
     <tr>
@@ -1242,8 +1861,12 @@ def admins():
 
     {% if a["role"] != "superior" %}
 
-    <a href="/admins/delete/{{a["id"]}}">
+    <a
+    href="/admins/delete/{{a["id"]}}"
+    >
+
     Remove
+
     </a>
 
     {% else %}
@@ -1268,74 +1891,111 @@ def admins():
     </html>
     """
 
+
     return render_template_string(
         page,
         admins=admin_list
     )
 
 
-@app.route("/admins/add", methods=["POST"])
+@app.route(
+    "/admins/add",
+    methods=["POST"]
+)
 def add_admin():
 
     if not login_required():
         return redirect("/login")
 
+
     if session.get("admin_role") != "superior":
         return "Access denied", 403
 
-    name = request.form.get("name", "").strip()
+
+    name = request.form.get(
+        "name",
+        ""
+    ).strip()
+
 
     email = request.form.get(
         "email",
         ""
     ).lower().strip()
 
+
     password = request.form.get(
         "password",
         ""
     )
 
+
     if not name or not email or not password:
         return redirect("/admins")
 
+
     con = db()
+
 
     try:
 
         con.execute(
-            "INSERT INTO admins (name,email,password,role) VALUES (?,?,?,?)",
-            (name, email, password, "admin")
+            """
+            INSERT INTO admins
+            (name,email,password,role)
+            VALUES (?,?,?,?)
+            """,
+            (
+                name,
+                email,
+                password,
+                "admin"
+            )
         )
 
         con.commit()
 
+
     except sqlite3.IntegrityError:
         pass
 
+
     con.close()
+
 
     return redirect("/admins")
 
 
-@app.route("/admins/delete/<int:admin_id>")
+@app.route(
+    "/admins/delete/<int:admin_id>"
+)
 def delete_admin(admin_id):
 
     if not login_required():
         return redirect("/login")
 
+
     if session.get("admin_role") != "superior":
         return "Access denied", 403
 
+
     con = db()
 
+
     con.execute(
-        "DELETE FROM admins WHERE id=? AND role!='superior'",
+        """
+        DELETE FROM admins
+        WHERE id=?
+        AND role!='superior'
+        """,
         (admin_id,)
     )
+
 
     con.commit()
 
     con.close()
+
 
     return redirect("/admins")
 
